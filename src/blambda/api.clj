@@ -58,7 +58,11 @@
                                {:dir work-dir
                                 :env (assoc (into {} (System/getenv))
                                             "GITLIBS" (str gitlibs-dir))}))
-                    deps-classpath (str/replace classpath deps-base-dir "/opt")]
+                    classpath-without-clj (str/join ":" (remove #(or (str/includes? % "m2-repo/org/clojure/clojure")
+                                                                     (str/includes? % "m2-repo/org/clojure/core.specs.alpha")
+                                                                     (str/includes? % "m2-repo/org/clojure/spec.alpha"))
+                                                                (str/split classpath #":")))
+                    deps-classpath (str/replace classpath-without-clj deps-base-dir "/opt")]
                 (println "Classpath before transforming:" classpath)
                 (println "Classpath after transforming:" deps-classpath)
                 (spit classpath-file deps-classpath)
@@ -66,6 +70,14 @@
 
                 (when pods
                   (fetch-pods opts pods))
+
+                (let [target-dir (fs/file work-dir m2-dir "org" "clojure")]
+                  (when (fs/exists? target-dir)
+                    (println "Removing Clojure itself from dependencies")
+                    (doseq [filename ["clojure" "core.specs.alpha" "pom.contrib" "spec.alpha"]]
+                      (fs/delete-tree (fs/file target-dir filename)))
+                    (when (empty? (fs/list-dir target-dir)) (fs/delete target-dir))
+                    (when (empty? (fs/list-dir (fs/parent target-dir))) (fs/delete (fs/parent target-dir)))))
 
                 (println "Compressing dependencies layer:" (str deps-zipfile))
                 (let [paths (concat [(fs/file-name gitlibs-dir)
