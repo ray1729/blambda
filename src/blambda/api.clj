@@ -66,7 +66,8 @@
                   (concat [classpath-file]
                           deps-files
                           local-pods
-                          (when (fs/directory? (fs/file work-dir ".babashka/pods")) [(fs/file work-dir ".babashka/pods")]))
+                          (when (and (seq pods) (fs/directory? (fs/file work-dir ".babashka/pods")))
+                            [(fs/file work-dir ".babashka/pods")]))
                   {:path-fn (partial transform-path work-dir)}))))))
 
 (defn build-runtime-layer
