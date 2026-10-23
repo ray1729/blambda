@@ -25,13 +25,13 @@
         (System/setProperty "os.arch" os-arch)))))
 
 (defn- transform-path
-  ([path]
+  ([work-dir path]
    (-> path
        (str/replace #"^.*/\.gitlibs/" "gitlibs/")
        (str/replace #"^.*/\.m2/repository/" "m2-repo/")
-       (str/replace #"^\.work/" "")))
-  ([prefix path]
-   (str prefix (transform-path path))))
+       (str/replace (re-pattern (str "^\\Q" work-dir "\\E/")) "")))
+  ([work-dir prefix path]
+   (str prefix (transform-path work-dir path))))
 
 (defn build-deps-layer
   "Builds layer for dependencies"
@@ -59,15 +59,15 @@
                                        (or (str/includes? % "/.gitlibs/") (str/includes? % "/.m2/repository/")))
                                  deps)
               local-pods (keep :path (vals pods))
-              classpath (str/join ":" (map (partial transform-path "/opt/") deps))
+              classpath (str/join ":" (map (partial transform-path work-dir "/opt/") deps))
               classpath-file (str (fs/file work-dir "deps-classpath"))]
           (spit classpath-file classpath)
           (fs/zip deps-zipfile
                   (concat [classpath-file]
                           deps-files
                           local-pods
-                          (when (fs/directory? ".work/.babashka/pods") [".work/.babashka"]))
-                  {:path-fn transform-path}))))))
+                          (when (fs/directory? (fs/file work-dir ".babashka/pods")) [(fs/file work-dir ".babashka/pods")]))
+                  {:path-fn (partial transform-path work-dir)}))))))
 
 (defn build-runtime-layer
   "Builds custom runtime layer"
