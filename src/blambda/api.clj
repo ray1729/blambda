@@ -1,6 +1,5 @@
 (ns blambda.api
-  (:require [babashka.deps :refer [clojure]]
-            [babashka.http-client :as http]
+  (:require [babashka.http-client :as http]
             [babashka.fs :as fs]
             [babashka.pods :as pods]
             [babashka.process :refer [shell]]
@@ -25,71 +24,50 @@
         (System/setProperty "user.home" home-dir)
         (System/setProperty "os.arch" os-arch)))))
 
+(defn- transform-path
+  ([path]
+   (-> path
+       (str/replace #"^.*/\.gitlibs/" "gitlibs/")
+       (str/replace #"^.*/\.m2/repository/" "m2-repo/")
+       (str/replace #"^\.work/" "")))
+  ([prefix path]
+   (str prefix (transform-path path))))
+
 (defn build-deps-layer
   "Builds layer for dependencies"
-  [{:keys [error deps-path target-dir work-dir] :as opts}]
-  (let [deps-zipfile (lib/deps-zipfile opts)]
-    (if (empty? (fs/modified-since deps-zipfile deps-path))
+  [{:keys [deps-path target-dir work-dir] :as opts}]
+  (let [{:keys [deps pods]} (-> deps-path slurp edn/read-string)
+        deps-zipfile (lib/deps-zipfile opts)]
+    (cond
+      (empty? (fs/modified-since deps-zipfile deps-path))
       (println (format "\nNot rebuilding dependencies layer: no changes to %s since %s was last built"
                        (str deps-path) (str deps-zipfile)))
+
+      (and (empty? deps) (empty? pods))
+      (println (format "\nNot building dependencies layer: no deps or pods listed in %s"
+                       (str deps-path)))
+
+      :else
       (do
         (println "\nBuilding dependencies layer:" (str deps-zipfile))
-        (doseq [dir [target-dir work-dir]]
-          (fs/create-dirs dir))
-        (let [gitlibs-dir "gitlibs"
-              m2-dir "m2-repo"
-              pods-dir ".babashka"
-              {:keys [deps pods]} (-> deps-path slurp edn/read-string)]
-          (if (and (empty? deps) (empty? pods))
-            (println (format "\nNot building dependencies layer: no deps or pods listed in %s"
-                             (str deps-path)))
-            (do
-              (spit (fs/file work-dir "deps.edn")
-                    {:deps (or deps {})
-                     :pods (or pods {})
-                     :mvn/local-repo (str m2-dir)})
-
-              (let [classpath-file (fs/file work-dir "deps-classpath")
-                    local-classpath-file (fs/file work-dir "deps-local-classpath")
-                    deps-base-dir (str (fs/path (fs/cwd) work-dir))
-                    classpath
-                    (with-out-str
-                      (clojure ["-Spath"]
-                               {:dir work-dir
-                                :env (assoc (into {} (System/getenv))
-                                            "GITLIBS" (str gitlibs-dir))}))
-                    classpath-without-clj (str/join ":" (remove #(or (str/includes? % "m2-repo/org/clojure/clojure")
-                                                                     (str/includes? % "m2-repo/org/clojure/core.specs.alpha")
-                                                                     (str/includes? % "m2-repo/org/clojure/spec.alpha"))
-                                                                (str/split classpath #":")))
-                    deps-classpath (str/replace classpath-without-clj deps-base-dir "/opt")]
-                (println "Classpath before transforming:" classpath)
-                (println "Classpath after transforming:" deps-classpath)
-                (spit classpath-file deps-classpath)
-                (spit local-classpath-file classpath)
-
-                (when pods
-                  (fetch-pods opts pods))
-
-                (let [target-dir (fs/file work-dir m2-dir "org" "clojure")]
-                  (when (fs/exists? target-dir)
-                    (println "Removing Clojure itself from dependencies")
-                    (doseq [filename ["clojure" "core.specs.alpha" "pom.contrib" "spec.alpha"]]
-                      (fs/delete-tree (fs/file target-dir filename)))
-                    (when (empty? (fs/list-dir target-dir)) (fs/delete target-dir))
-                    (when (empty? (fs/list-dir (fs/parent target-dir))) (fs/delete (fs/parent target-dir)))))
-
-                (println "Compressing dependencies layer:" (str deps-zipfile))
-                (let [paths (concat [(fs/file-name gitlibs-dir)
-                                     (fs/file-name m2-dir)
-                                     (fs/file-name pods-dir)
-                                     (fs/file-name classpath-file)]
-                                    (->> pods
-                                         (map (fn [[_ {:keys [path]}]] path))
-                                         (remove nil?)))]
-                  (apply shell {:dir work-dir}
-                         "zip -r" deps-zipfile
-                         paths))))))))))
+        (fs/delete-if-exists deps-zipfile)
+        (run! fs/create-dirs [target-dir work-dir])
+        (when (seq pods) (fetch-pods opts pods))
+        (let [deps (-> (shell {:out :string} "bb" "--config" deps-path "print-deps" "--format" "classpath")
+                       :out (str/split #":"))
+              deps-files (filter #(and (fs/exists? %)
+                                       (or (str/includes? % "/.gitlibs/") (str/includes? % "/.m2/repository/")))
+                                 deps)
+              local-pods (keep :path (vals pods))
+              classpath (str/join ":" (map (partial transform-path "/opt/") deps))
+              classpath-file (str (fs/file work-dir "deps-classpath"))]
+          (spit classpath-file classpath)
+          (fs/zip deps-zipfile
+                  (concat [classpath-file]
+                          deps-files
+                          local-pods
+                          (when (fs/directory? ".work/.babashka/pods") [".work/.babashka"]))
+                  {:path-fn transform-path}))))))
 
 (defn build-runtime-layer
   "Builds custom runtime layer"
