@@ -59,7 +59,8 @@
                                        (or (str/includes? % "/.gitlibs/") (str/includes? % "/.m2/repository/")))
                                  deps)
               local-pods (keep :path (vals pods))
-              classpath (str/join ":" (map (partial transform-path work-dir "/opt/") deps))
+              classpath (str/join ":" (conj (map (partial transform-path work-dir "/opt/") (remove #{"src"} deps))
+                                            "src"))
               classpath-file (str (fs/file work-dir "deps-classpath"))]
           (spit classpath-file classpath)
           (fs/zip deps-zipfile
